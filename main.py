@@ -1,5 +1,8 @@
 import pygame
 import sys
+import math
+import importlib
+import random
 
 # --- Initialization ---
 pygame.init()
@@ -91,13 +94,19 @@ BG_SCROLL_SPEED = 40  # pixels per second
 def draw_scrolling_bg(surface, dt, scroll_offset):
     scale_x, scale_y = get_scale()
     win_w, win_h = surface.get_size()
+    # Make the background wide enough for seamless scrolling
     bg = pygame.transform.smoothscale(BLURRED_BG, (int(win_w * 1.2), int(win_h * 1.2)))
     bg_w, bg_h = bg.get_size()
-    x = int(-scroll_offset % (bg_w - win_w))
+
+    # Ensure seamless horizontal tiling by drawing two images side by side
+    x = int(scroll_offset % bg_w)
     surface.blit(bg, (-x, 0))
     if x > 0:
         surface.blit(bg, (bg_w - x, 0))
-    return (scroll_offset + BG_SCROLL_SPEED * dt) % (bg_w - win_w)
+
+    # Advance the scroll offset
+    scroll_offset = (scroll_offset + BG_SCROLL_SPEED * dt) % bg_w
+    return scroll_offset
 
 # --- Audio ---
 try:
@@ -240,6 +249,18 @@ class SettingsMenu:
                     opt.handle_mouse(mx, slider_x, slider_width)
         return None
 
+# --- Load Logo ---
+def load_logo():
+    try:
+        logo = pygame.image.load("assets/img/gonkware.png").convert_alpha()
+        return logo
+    except Exception:
+        surf = pygame.Surface((300, 120), pygame.SRCALPHA)
+        pygame.draw.rect(surf, WHITE, surf.get_rect(), border_radius=24)
+        return surf
+
+LOGO_IMG = load_logo()
+
 # --- Main Menu ---
 class Menu:
     def __init__(self):
@@ -250,12 +271,29 @@ class Menu:
         scroll_offset = draw_scrolling_bg(screen, dt, scroll_offset)
         scale_x, scale_y = get_scale()
         screen_w, screen_h = screen.get_size()
-        font = pygame.font.Font("assets/font/PhillySans.ttf", int(74 * scale_y))
-        title_surface = render_outlined_text(font, "GonkWare", WHITE, TITLE_OUTLINE, int(4 * scale_y))
-        title_x = int(60 * scale_x)
-        title_y = screen_h // 2 - title_surface.get_height() // 2
-        screen.blit(title_surface, (title_x, title_y))
 
+        # --- Animated Logo ---
+        t = pygame.time.get_ticks() / 1000.0
+
+        # Tilt: oscillate between -10 and +10 degrees at 1Hz (constant rhythm)
+        tilt_angle = math.sin(t * 2 * math.pi * 1) * 10  # 1Hz, 10deg amplitude
+
+        # Scale: pulse at 120BPM (2Hz), e.g. 0.95x to 1.05x
+        scale_beat = 1 + 0.05 * math.sin(t * 2 * math.pi * 2)  # 2Hz, ±5%
+
+        # Final scale with window scaling
+        logo_base_w = LOGO_IMG.get_width()
+        logo_base_h = LOGO_IMG.get_height()
+        logo_scale = min(scale_x, scale_y) * scale_beat
+        logo_img = pygame.transform.rotozoom(LOGO_IMG, -tilt_angle, logo_scale)
+        logo_rect = logo_img.get_rect()
+
+        # Fixed position: always left side, vertically centered relative to BASE_HEIGHT
+        logo_rect.left = int(60 * scale_x)
+        logo_rect.centery = int(BASE_HEIGHT // 2 * scale_y)
+        screen.blit(logo_img, logo_rect)
+
+        # --- Menu Buttons ---
         btn_size = int(BUTTON_SIZE * min(scale_x, scale_y))
         btn_margin = int(BUTTON_MARGIN * scale_y)
         total_height = len(self.options) * btn_size + (len(self.options) - 1) * btn_margin
@@ -274,14 +312,14 @@ class Menu:
             icon_rect = icon.get_rect(center=rect.center)
             screen.blit(icon, icon_rect)
 
-            text = option_font.render(option, True, WHITE)  # <-- changed BLACK to WHITE
+            text = option_font.render(option, True, WHITE)
             text_rect = text.get_rect()
             text_rect.centery = rect.centery
             text_rect.right = rect.left - int(20 * scale_x)
             screen.blit(text, text_rect)
 
         footer_font = pygame.font.Font("assets/font/PhillySans.ttf", int(28 * scale_y))
-        footer_text = footer_font.render("UP/DOWN to navigate, ENTER to select", True, WHITE)  # <-- changed BLACK to WHITE
+        footer_text = footer_font.render("UP/DOWN to navigate, ENTER to select", True, WHITE)
         screen.blit(footer_text, (screen_w // 2 - footer_text.get_width() // 2, screen_h - int(40 * scale_y)))
         return scroll_offset
 
@@ -304,6 +342,9 @@ def main():
     last_time = pygame.time.get_ticks() / 1000.0
     scroll_offset = 0
 
+    # Lazy import minigames when needed
+    minigames_module = None
+
     while running:
         now = pygame.time.get_ticks() / 1000.0
         dt = now - last_time
@@ -319,7 +360,32 @@ def main():
             if state == "main":
                 result = menu.handle_event(event)
                 if result == 0:
-                    print("Start Game selected (implement game launch here)")
+                    # --- Start Game: Load and run minigames ---
+                    if minigames_module is None:
+                        minigames_module = importlib.import_module("minigames")
+                    # List of minigame constructors
+                    minigame_types = [
+                        lambda: minigames_module.TriviaMiniGame(screen, pygame.font.Font("assets/font/PhillySans.ttf", 32), "history"),
+                        lambda: minigames_module.MathMiniGame(screen, pygame.font.Font("assets/font/PhillySans.ttf", 32)),
+                        lambda: minigames_module.TypingMiniGame(screen, pygame.font.Font("assets/font/PhillySans.ttf", 32)),
+                        lambda: minigames_module.ScienceTFMiniGame(screen, pygame.font.Font("assets/font/PhillySans.ttf", 32)),
+                        lambda: minigames_module.GeographyFlagMiniGame(screen, pygame.font.Font("assets/font/PhillySans.ttf", 32)),
+                    ]
+                    random.shuffle(minigame_types)
+                    for mg_func in minigame_types:
+                        mg = mg_func()
+                        result = mg.run()
+                        # Show result for a moment
+                        screen.fill((0, 180, 0) if result else (180, 0, 0))
+                        msg = pygame.font.Font("assets/font/PhillySans.ttf", 48).render(
+                            "Success!" if result else "Failed!", True, WHITE
+                        )
+                        screen.blit(msg, (screen.get_width() // 2 - msg.get_width() // 2, screen.get_height() // 2 - msg.get_height() // 2))
+                        pygame.display.flip()
+                        pygame.time.wait(1200)
+                        if not result:
+                            break  # End game on first fail (Warioware style)
+                    state = "main"
                 elif result == 1:
                     state = "settings"
                 elif result == 2:
